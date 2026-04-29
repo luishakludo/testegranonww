@@ -2418,6 +2418,9 @@ Escaneie o QR Code ou copie o codigo abaixo:
           // Salvar pagamento
           const productType = isAccept ? "downsell_with_bump" : "downsell"
           console.log("[v0] Saving downsell+OB payment - user_id:", botOwnerDsOb.user_id, "amount:", totalPrice, "product_type:", productType)
+          
+          // Pegar o order_bump_deliverable_id do state metadata
+          const obDeliverableId = (stateMetadata?.order_bump_deliverable_id as string) || ""
 
           await supabase.from("payments").insert({
             user_id: botOwnerDsOb.user_id,
@@ -2438,6 +2441,13 @@ Escaneie o QR Code ou copie o codigo abaixo:
             qr_code_url: pixResultDsOb.qrCodeUrl,
             copy_paste: pixResultDsOb.copyPaste,
             pix_code: pixResultDsOb.copyPaste || pixResultDsOb.qrCode,
+            metadata: isAccept ? {
+              main_price: mainPrice,
+              main_plan_name: mainPlanName,
+              order_bump_price: obPrice,
+              order_bump_name: obName,
+              order_bump_deliverable_id: obDeliverableId,
+            } : null,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
           })
