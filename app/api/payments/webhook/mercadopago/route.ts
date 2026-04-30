@@ -1395,7 +1395,21 @@ export async function POST(request: NextRequest) {
                     }
                   }
                   
-                  const dsConfig = dsFlowConfig?.downsell
+                  // Verificar se o pagamento veio de downsell PIX gerado
+                  // Se sim, usar configuracao downsellPix em vez de downsell normal
+                  const dsPaymentMetadataCheck = (payment as { metadata?: Record<string, string> }).metadata || {}
+                  const dsSource = dsPaymentMetadataCheck.source || ""
+                  const isPixGeneratedDownsell = dsSource === "pix_generated"
+                  
+                  console.log(`[DOWNSELL] Source: ${dsSource || "N/A"}, isPixGenerated: ${isPixGeneratedDownsell}`)
+                  
+                  // Usar downsellPix se for PIX gerado, senao usar downsell normal
+                  const dsConfig = isPixGeneratedDownsell 
+                    ? (dsFlowConfig?.downsellPix || dsFlowConfig?.downsell) 
+                    : dsFlowConfig?.downsell
+                  
+                  console.log(`[DOWNSELL] Usando config: ${isPixGeneratedDownsell ? "downsellPix" : "downsell"}`)
+                  
                   const paymentMessages = dsFlowConfig?.paymentMessages as {
                     approvedMessage?: string
                     approvedMedias?: string[]

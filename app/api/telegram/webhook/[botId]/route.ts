@@ -2560,6 +2560,9 @@ Escaneie o QR Code ou copie o codigo abaixo:
           console.log("[DOWNSELL-CALLBACK] Metadata nao tem deliverableId/deliveryType, buscando da sequencia...")
           const seqId = scheduledMsg?.sequence_id || (msgMetadata?.sequenceId as string)
           const seqIndex = scheduledMsg?.sequence_index ?? (msgMetadata?.sequenceIndex as number | undefined)
+          // Verificar se e downsell PIX gerado (source: "pix_generated")
+          const sourceFromScheduledMsg = (msgMetadata?.source as string) || ""
+          const isPixGeneratedFromScheduled = sourceFromScheduledMsg === "pix_generated"
           
           if (seqId || seqIndex !== undefined) {
             // Buscar o fluxo para pegar a config da sequencia
@@ -2573,8 +2576,13 @@ Escaneie o QR Code ou copie o codigo abaixo:
               
               if (flowForSeq?.config) {
                 const flowConfigSeq = flowForSeq.config as Record<string, unknown>
-                const downsellConfigSeq = flowConfigSeq.downsell as { sequences?: Array<{ id: string; deliveryType?: string; deliverableId?: string }> } | undefined
+                // Se for PIX gerado, usar downsellPix em vez de downsell
+                const downsellConfigSeq = (isPixGeneratedFromScheduled 
+                  ? (flowConfigSeq.downsellPix || flowConfigSeq.downsell) 
+                  : flowConfigSeq.downsell) as { sequences?: Array<{ id: string; deliveryType?: string; deliverableId?: string }> } | undefined
                 const sequences = downsellConfigSeq?.sequences || []
+                
+                console.log(`[DOWNSELL-CALLBACK] Usando config: ${isPixGeneratedFromScheduled ? "downsellPix" : "downsell"}, sequences: ${sequences.length}`)
                 
                 // Buscar sequencia por ID ou index
                 let foundSeq = seqId ? sequences.find(s => s.id === seqId) : undefined
@@ -2637,6 +2645,8 @@ Escaneie o QR Code ou copie o codigo abaixo:
           await answerCallback(botToken, callbackQueryId, "Preparando oferta especial...")
 
           // Salvar estado para saber que esta esperando resposta do order bump
+          // IMPORTANTE: Incluir tambem o deliverableId e source do downsell para que o pagamento final use o entregavel correto
+          const sourceFromMsgMeta = (msgMetadata?.source as string) || ""
           await supabase.from("user_flow_state").upsert({
             bot_id: botUuid,
             telegram_user_id: String(telegramUserId),
@@ -2648,6 +2658,10 @@ Escaneie o QR Code ou copie o codigo abaixo:
               order_bump_price: orderBumpDownsell.price,
               order_bump_name: orderBumpDownsell.name,
               order_bump_deliverable_id: (orderBumpDownsell as { deliverableId?: string })?.deliverableId || "",
+              // Incluir info do downsell para que o pagamento final use o entregavel correto
+              downsell_deliverable_id: dsDeliverableIdFromMeta || "",
+              downsell_sequence_index: msgMetadata?.sequenceIndex !== undefined ? Number(msgMetadata.sequenceIndex) : 0,
+              source: sourceFromMsgMeta, // "pix_generated" se for downsell PIX
             },
             updated_at: new Date().toISOString(),
           }, { onConflict: "bot_id,telegram_user_id" })
@@ -2727,6 +2741,10 @@ Escaneie o QR Code ou copie o codigo abaixo:
           if (dsDeliveryTypeFromMeta) dsPaymentMetadata.downsell_delivery_type = dsDeliveryTypeFromMeta
           // Guardar o sequence_index para fallback
           if (msgMetadata?.sequenceIndex !== undefined) dsPaymentMetadata.sequence_index = String(msgMetadata.sequenceIndex)
+          // IMPORTANTE: Passar o source para saber se e downsell PIX gerado
+          // Se for "pix_generated", o webhook de pagamento usara a config downsellPix em vez de downsell
+          const sourceFromMeta = (msgMetadata?.source as string) || ""
+          if (sourceFromMeta) dsPaymentMetadata.source = sourceFromMeta
           
           // LOG CRUCIAL: Verificar o que vai ser salvo no metadata
           console.log("==================================================")
