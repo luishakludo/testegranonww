@@ -11,13 +11,12 @@ import {
 import { NoBotSelected } from "@/components/no-bot-selected"
 import { useBots } from "@/lib/bot-context"
 import { useAuth } from "@/lib/auth-context"
-import { supabase } from "@/lib/supabase"
 import { useState, useEffect, useCallback } from "react"
 import { toast } from "sonner"
 import { 
   Zap, GitBranch, BarChart3, Globe, Plus, Facebook, 
   Loader2, Trash2, RefreshCw, Eye, EyeOff, AlertCircle,
-  Settings2, Check
+  Settings2, Check, FlaskConical
 } from "lucide-react"
 
 interface TrackingProfile {
@@ -58,6 +57,10 @@ export default function TrackingPage() {
   // Token visibility
   const [showAccessToken, setShowAccessToken] = useState(false)
   const [showUtmifyToken, setShowUtmifyToken] = useState(false)
+  
+  // Connection test state
+  const [isTesting, setIsTesting] = useState(false)
+  const [testEventCode, setTestEventCode] = useState("")
   
   // Flows from database
   const [availableFlows, setAvailableFlows] = useState<Flow[]>([])
@@ -103,22 +106,23 @@ export default function TrackingPage() {
     fetchProfiles()
   }, [fetchProfiles])
   
-  // Fetch flows from database
+  // Fetch flows via internal API (consistent with the rest of the app)
   useEffect(() => {
     async function fetchFlows() {
       if (!session?.userId) return
       
       setIsLoadingFlows(true)
-      const { data, error } = await supabase
-        .from("flows")
-        .select("id, name, status")
-        .eq("user_id", session.userId)
-        .order("created_at", { ascending: false })
-      
-      if (!error && data) {
-        setAvailableFlows(data)
+      try {
+        const res = await fetch(`/api/fluxo/list?userId=${session.userId}`)
+        const data = await res.json()
+        if (res.ok && Array.isArray(data.flows)) {
+          setAvailableFlows(data.flows)
+        }
+      } catch (err) {
+        console.error("[v0] Error fetching flows:", err)
+      } finally {
+        setIsLoadingFlows(false)
       }
-      setIsLoadingFlows(false)
     }
     
     fetchFlows()
@@ -194,6 +198,43 @@ export default function TrackingPage() {
     setSelectedFlows([])
     setShowAccessToken(false)
     setShowUtmifyToken(false)
+    setTestEventCode("")
+  }
+
+  const handleTestConnection = async () => {
+    if (!pixelId && !accessToken && !utmifyToken) {
+      toast.error("Preencha o Pixel + Access Token ou o UTMify Token para testar")
+      return
+    }
+    setIsTesting(true)
+    try {
+      const res = await fetch("/api/tracking/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pixelId: pixelId || null,
+          accessToken: accessToken || null,
+          utmifyToken: utmifyToken || null,
+          testEventCode: testEventCode || null,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || "Erro ao testar")
+
+      const { meta, utmify } = data.results || {}
+      if (meta) {
+        if (meta.ok) toast.success(`Meta CAPI: ${meta.message}`)
+        else toast.error(`Meta CAPI: ${meta.message}`)
+      }
+      if (utmify) {
+        if (utmify.ok) toast.success(`UTMify: ${utmify.message}`)
+        else toast.error(`UTMify: ${utmify.message}`)
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Erro ao testar conexao")
+    } finally {
+      setIsTesting(false)
+    }
   }
 
   const toggleEvent = (eventId: string) => {
@@ -271,8 +312,8 @@ export default function TrackingPage() {
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
             <div>
               <h1 className="text-2xl font-bold text-foreground tracking-tight flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center">
-                  <BarChart3 className="w-5 h-5 text-white" />
+                <div className="w-10 h-10 rounded-xl bg-primary flex items-center justify-center">
+                  <BarChart3 className="w-5 h-5 text-primary-foreground" />
                 </div>
                 Trackeamento
               </h1>
@@ -294,7 +335,7 @@ export default function TrackingPage() {
               <Button 
                 onClick={() => setShowPlatformDialog(true)}
                 size="sm"
-                className="bg-blue-600 hover:bg-blue-700 text-white gap-2"
+                className="gap-2"
               >
                 <Plus className="w-4 h-4" />
                 Novo Perfil
@@ -304,11 +345,11 @@ export default function TrackingPage() {
 
           {/* Error Banner */}
           {error && (
-            <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 mb-6 flex items-start gap-3">
-              <AlertCircle className="w-5 h-5 text-red-500 mt-0.5 shrink-0" />
+            <div className="bg-destructive/10 border border-destructive/20 rounded-xl p-4 mb-6 flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-destructive mt-0.5 shrink-0" />
               <div>
-                <p className="text-sm font-medium text-red-500">Erro ao carregar dados</p>
-                <p className="text-sm text-red-400/80 mt-0.5">{error}</p>
+                <p className="text-sm font-medium text-destructive">Erro ao carregar dados</p>
+                <p className="text-sm text-destructive/80 mt-0.5">{error}</p>
                 <p className="text-xs text-muted-foreground mt-2">
                   Verifique se a tabela tracking_profiles existe no banco de dados. 
                   Execute o script SQL em scripts/setup-tracking-tables.sql
@@ -319,9 +360,9 @@ export default function TrackingPage() {
 
           {/* Stats Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
-            <div className="bg-card border border-border rounded-2xl p-5 flex items-center gap-4 hover:border-blue-500/30 transition-colors">
-              <div className="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center">
-                <Zap className="w-5 h-5 text-blue-500" />
+            <div className="bg-card border border-border rounded-2xl p-5 flex items-center gap-4 hover:border-primary/30 transition-colors">
+              <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center">
+                <Zap className="w-5 h-5 text-primary" />
               </div>
               <div>
                 <p className="text-2xl font-bold text-foreground">{activeProfiles}</p>
@@ -351,10 +392,10 @@ export default function TrackingPage() {
           </div>
 
           {/* Info Banner */}
-          <div className="bg-gradient-to-r from-blue-500/5 to-transparent border border-blue-500/10 rounded-2xl p-5 mb-6">
+          <div className="bg-primary/5 border border-primary/10 rounded-2xl p-5 mb-6">
             <div className="flex items-start gap-4">
-              <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center shrink-0">
-                <Globe className="w-5 h-5 text-blue-500" />
+              <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
+                <Globe className="w-5 h-5 text-primary" />
               </div>
               <div>
                 <p className="text-sm text-foreground font-medium mb-1">Como funciona o Tracking Dragon</p>
@@ -389,7 +430,7 @@ export default function TrackingPage() {
                 </p>
                 <Button 
                   onClick={() => setShowPlatformDialog(true)}
-                  className="bg-blue-600 hover:bg-blue-700 text-white gap-2"
+                  className="gap-2"
                 >
                   <Plus className="w-4 h-4" />
                   Criar Primeiro Perfil
@@ -401,9 +442,9 @@ export default function TrackingPage() {
                   <div key={profile.id} className="flex items-center justify-between p-4 hover:bg-muted/30 transition-colors">
                     <div className="flex items-center gap-4">
                       <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
-                        profile.active ? "bg-blue-500/10" : "bg-muted"
+                        profile.active ? "bg-primary/10" : "bg-muted"
                       }`}>
-                        <Facebook className={`w-5 h-5 ${profile.active ? "text-blue-500" : "text-muted-foreground"}`} />
+                        <Facebook className={`w-5 h-5 ${profile.active ? "text-primary" : "text-muted-foreground"}`} />
                       </div>
                       <div>
                         <p className="font-medium text-foreground text-sm">{profile.name}</p>
@@ -418,7 +459,7 @@ export default function TrackingPage() {
                           {profile.pixel_id && (
                             <>
                               <span className="text-muted-foreground">·</span>
-                              <span className="text-xs text-blue-400">Meta</span>
+                              <span className="text-xs text-primary">Meta</span>
                             </>
                           )}
                           {profile.utmify_token && (
@@ -445,13 +486,13 @@ export default function TrackingPage() {
                       <Switch 
                         checked={profile.active} 
                         onCheckedChange={() => toggleProfileActive(profile.id, profile.active)}
-                        className="data-[state=checked]:bg-blue-500"
+                        className="data-[state=checked]:bg-primary"
                       />
                       <Button
                         variant="ghost"
                         size="icon"
                         onClick={() => deleteProfile(profile.id)}
-                        className="text-muted-foreground hover:text-red-500 hover:bg-red-500/10 h-8 w-8"
+                        className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 h-8 w-8"
                       >
                         <Trash2 className="w-4 h-4" />
                       </Button>
@@ -480,10 +521,10 @@ export default function TrackingPage() {
               {/* Facebook */}
               <button 
                 onClick={handleSelectPlatform}
-                className="flex flex-col items-center p-5 rounded-xl border border-border bg-card hover:border-blue-500/50 hover:bg-blue-500/5 transition-all group"
+                className="flex flex-col items-center p-5 rounded-xl border border-border bg-card hover:border-primary/50 hover:bg-primary/5 transition-all group"
               >
-                <div className="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center mb-2 group-hover:bg-blue-500/20 transition-colors">
-                  <Facebook className="w-6 h-6 text-blue-500" />
+                <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center mb-2 group-hover:bg-primary/20 transition-colors">
+                  <Facebook className="w-6 h-6 text-primary" />
                 </div>
                 <span className="text-foreground font-medium text-sm">Facebook</span>
                 <span className="text-xs text-muted-foreground mt-0.5">Pixel + CAPI</span>
@@ -520,8 +561,8 @@ export default function TrackingPage() {
         <DialogContent className="bg-card border border-border sm:max-w-lg rounded-2xl p-0 max-h-[90vh] overflow-hidden">
           <DialogHeader className="p-6 pb-4 border-b border-border">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center">
-                <Facebook className="w-5 h-5 text-blue-500" />
+              <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
+                <Facebook className="w-5 h-5 text-primary" />
               </div>
               <div>
                 <DialogTitle className="text-foreground text-lg font-semibold">Novo Perfil Facebook</DialogTitle>
@@ -536,7 +577,7 @@ export default function TrackingPage() {
             <div className="p-6 space-y-6">
               {/* Profile Name */}
               <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">Nome do Perfil <span className="text-red-500">*</span></label>
+                <label className="text-sm font-medium text-foreground">Nome do Perfil <span className="text-destructive">*</span></label>
                 <Input 
                   value={profileName}
                   onChange={(e) => setProfileName(e.target.value)}
@@ -549,7 +590,7 @@ export default function TrackingPage() {
               <div className="space-y-4">
                 <div className="flex items-center gap-2">
                   <div className="flex-1 h-px bg-border"></div>
-                  <span className="text-xs font-medium text-blue-400 uppercase tracking-wider px-2 py-1 bg-blue-500/10 rounded-full">
+                  <span className="text-xs font-medium text-primary uppercase tracking-wider px-2 py-1 bg-primary/10 rounded-full">
                     Meta Conversion API
                   </span>
                   <div className="flex-1 h-px bg-border"></div>
@@ -585,6 +626,18 @@ export default function TrackingPage() {
                     </div>
                     <p className="text-xs text-muted-foreground">
                       Business Manager → Events Manager → Data Sources → Settings
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-muted-foreground">Test Event Code (opcional)</label>
+                    <Input
+                      value={testEventCode}
+                      onChange={(e) => setTestEventCode(e.target.value)}
+                      placeholder="TEST12345"
+                      className="bg-input border-border text-foreground placeholder:text-muted-foreground h-11 rounded-xl font-mono text-sm"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Use para validar na aba &quot;Test Events&quot; do Events Manager
                     </p>
                   </div>
                 </div>
@@ -640,16 +693,16 @@ export default function TrackingPage() {
                       onClick={() => toggleEvent(event.id)}
                       className={`flex items-center gap-3 px-4 py-3 rounded-xl border transition-all text-left ${
                         selectedEvents.includes(event.id)
-                          ? "bg-blue-500/10 border-blue-500/30"
+                          ? "bg-primary/10 border-primary/30"
                           : "bg-muted/30 border-border hover:border-border/80"
                       }`}
                     >
                       <Checkbox 
                         checked={selectedEvents.includes(event.id)}
-                        className="data-[state=checked]:bg-blue-500 data-[state=checked]:border-blue-500 border-border"
+                        className="data-[state=checked]:bg-primary data-[state=checked]:border-primary border-border"
                       />
                       <div>
-                        <span className={`text-sm font-medium ${selectedEvents.includes(event.id) ? "text-blue-400" : "text-foreground"}`}>
+                        <span className={`text-sm font-medium ${selectedEvents.includes(event.id) ? "text-primary" : "text-foreground"}`}>
                           {event.label}
                         </span>
                         <p className="text-xs text-muted-foreground">{event.description}</p>
@@ -689,13 +742,13 @@ export default function TrackingPage() {
                           onClick={() => toggleFlow(flow.id)}
                           className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
                             selectedFlows.includes(flow.id)
-                              ? "bg-blue-500/5 border-blue-500/30"
+                              ? "bg-primary/5 border-primary/30"
                               : "bg-muted/30 border-border hover:border-border/80"
                           }`}
                         >
                           <Checkbox 
                             checked={selectedFlows.includes(flow.id)}
-                            className="data-[state=checked]:bg-blue-500 data-[state=checked]:border-blue-500 border-border"
+                            className="data-[state=checked]:bg-primary data-[state=checked]:border-primary border-border"
                           />
                           <div>
                             <p className="text-sm font-medium text-foreground">{flow.name}</p>
@@ -711,30 +764,44 @@ export default function TrackingPage() {
           </ScrollArea>
           
           {/* Footer Buttons */}
-          <div className="p-6 pt-4 border-t border-border flex justify-end gap-3">
-            <Button 
-              variant="outline" 
-              onClick={() => {
-                resetForm()
-                setShowFacebookDialog(false)
-              }}
+          <div className="p-6 pt-4 border-t border-border flex flex-col sm:flex-row sm:justify-between gap-3">
+            <Button
+              variant="outline"
+              onClick={handleTestConnection}
+              disabled={isTesting || isSaving}
+              className="gap-2"
             >
-              Cancelar
-            </Button>
-            <Button 
-              onClick={handleCreateProfile}
-              disabled={!profileName.trim() || isSaving}
-              className="bg-blue-600 hover:bg-blue-700 text-white"
-            >
-              {isSaving ? (
-                <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Criando...
-                </>
+              {isTesting ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
               ) : (
-                "Criar Perfil"
+                <FlaskConical className="w-4 h-4" />
               )}
+              Testar Conexao
             </Button>
+            <div className="flex justify-end gap-3">
+              <Button 
+                variant="outline" 
+                onClick={() => {
+                  resetForm()
+                  setShowFacebookDialog(false)
+                }}
+              >
+                Cancelar
+              </Button>
+              <Button 
+                onClick={handleCreateProfile}
+                disabled={!profileName.trim() || isSaving}
+              >
+                {isSaving ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Criando...
+                  </>
+                ) : (
+                  "Criar Perfil"
+                )}
+              </Button>
+            </div>
           </div>
         </DialogContent>
       </Dialog>

@@ -1,4 +1,19 @@
 import { createClient } from "@supabase/supabase-js"
+import crypto from "crypto"
+
+// Hash PII with SHA-256 (lowercase hex) — required by Meta CAPI for advanced matching
+function sha256(value: string): string {
+  return crypto.createHash("sha256").update(value.trim().toLowerCase()).digest("hex")
+}
+
+// Optional context to improve Meta Event Match Quality (EMQ)
+export interface TrackingExtras {
+  ip?: string | null
+  userAgent?: string | null
+  fbc?: string | null // _fbc cookie / fbclid value
+  fbp?: string | null // _fbp cookie
+  testEventCode?: string | null
+}
 
 // Types
 export interface TrackingUser {
@@ -198,7 +213,8 @@ export async function sendToMeta(
   user: TrackingUser,
   eventName: string,
   eventId: string,
-  value: number | null = null
+  value: number | null = null,
+  extras: TrackingExtras = {}
 ): Promise<boolean> {
   if (!pixelId || !accessToken) {
     console.log("[TRACKING] Meta: Missing pixelId or accessToken")
@@ -207,22 +223,35 @@ export async function sendToMeta(
   
   const eventTime = Math.floor(Date.now() / 1000)
   
-  const payload = {
+  // Build user_data with hashed PII for better Event Match Quality
+  const userData: Record<string, unknown> = {
+    external_id: sha256(user.telegram_id),
+  }
+  if (extras.ip) userData.client_ip_address = extras.ip
+  if (extras.userAgent) userData.client_user_agent = extras.userAgent
+  if (extras.fbc) userData.fbc = extras.fbc
+  if (extras.fbp) userData.fbp = extras.fbp
+  
+  const payload: Record<string, unknown> = {
     data: [
       {
         event_name: eventName,
         event_time: eventTime,
         event_id: eventId,
-        action_source: "system_generated",
-        user_data: {
-          external_id: user.telegram_id,
-        },
+        // "chat" is the recommended source for messaging-platform conversions (Telegram bot)
+        action_source: "chat",
+        user_data: userData,
         custom_data: value ? {
           currency: "BRL",
           value: value,
         } : undefined,
       },
     ],
+  }
+  
+  // Forward to Meta Test Events tab when a test_event_code is provided
+  if (extras.testEventCode) {
+    payload.test_event_code = extras.testEventCode
   }
   
   try {
@@ -351,7 +380,8 @@ export async function trackEvent(
   telegramId: string,
   flowId: string | null,
   eventName: string,
-  value: number | null = null
+  value: number | null = null,
+  extras: TrackingExtras = {}
 ): Promise<{ success: boolean; eventId: string | null }> {
   console.log(`[TRACKING] trackEvent called: bot=${botId}, user=${telegramId}, event=${eventName}, value=${value}`)
   
@@ -399,7 +429,8 @@ export async function trackEvent(
         user,
         eventName,
         event.event_id,
-        value
+        value,
+        extras
       )
     }
     
