@@ -1706,39 +1706,60 @@ export async function POST(request: NextRequest) {
                   const dsObPaymentMetadata = payment.metadata as Record<string, any> | null
                   const dsObMainPlanName = (dsObPaymentMetadata?.main_plan_name as string) || ""
                   const dsObOrderBumpDeliverableId = (dsObPaymentMetadata?.order_bump_deliverable_id as string) || ""
+                  const dsObDownsellDeliverableId = (dsObPaymentMetadata?.downsell_deliverable_id as string) || ""
+                  const dsObSequenceIndex = (dsObPaymentMetadata?.downsell_sequence_index as number) || 0
+                  const dsObSource = (dsObPaymentMetadata?.source as string) || ""
                   const mainPrice = (dsObPaymentMetadata?.main_price as number) || 0
                   
                   console.log(`[DOWNSELL+OB] Payment metadata:`, JSON.stringify(dsObPaymentMetadata))
                   console.log(`[DOWNSELL+OB] Main plan name: ${dsObMainPlanName}`)
                   console.log(`[DOWNSELL+OB] Main price: ${mainPrice}`)
+                  console.log(`[DOWNSELL+OB] Downsell deliverable ID: ${dsObDownsellDeliverableId}`)
                   console.log(`[DOWNSELL+OB] Order bump deliverable ID: ${dsObOrderBumpDeliverableId}`)
+                  console.log(`[DOWNSELL+OB] Sequence index: ${dsObSequenceIndex}`)
+                  console.log(`[DOWNSELL+OB] Source: ${dsObSource}`)
                   
                   // 8. Entregar produto principal do downsell
-                  // Buscar sequencia de downsell pelo preco do plano principal
-                  const dsObSequences = (dsObConfig?.sequences || []) as Array<{
-                    id: string
-                    plans?: Array<{ buttonText: string; price: number }>
-                    deliveryType?: string
-                    deliverableId?: string
-                  }>
+                  // Primeiro tenta do metadata, depois busca pela sequencia
+                  let dsObMainDeliverableId = dsObDownsellDeliverableId
                   
-                  let dsObMainDeliverableId: string | undefined = undefined
-                  
-                  console.log(`[DOWNSELL+OB] Buscando entregavel para preco principal: ${mainPrice}`)
-                  
-                  for (const seq of dsObSequences) {
-                    const seqPlans = seq.plans || []
-                    for (const plan of seqPlans) {
-                      if (Math.abs(plan.price - mainPrice) < 0.01) {
-                        console.log(`[DOWNSELL+OB] Encontrou sequencia ${seq.id} com plano de preco ${plan.price}`)
-                        if (seq.deliveryType === "custom" && seq.deliverableId) {
-                          dsObMainDeliverableId = seq.deliverableId
-                          console.log(`[DOWNSELL+OB] Usando entregavel da sequencia: ${dsObMainDeliverableId}`)
+                  if (!dsObMainDeliverableId) {
+                    // Buscar sequencia de downsell - usar downsellPix se source for "pix_generated"
+                    const dsObConfigToUse = dsObSource === "pix_generated" 
+                      ? dsObFlowConfig?.downsellPix 
+                      : dsObConfig
+                    const dsObSequences = (dsObConfigToUse?.sequences || []) as Array<{
+                      id: string
+                      plans?: Array<{ buttonText: string; price: number }>
+                      deliveryType?: string
+                      deliverableId?: string
+                    }>
+                    
+                    console.log(`[DOWNSELL+OB] Using ${dsObSource === "pix_generated" ? "downsellPix" : "downsell"} config`)
+                    console.log(`[DOWNSELL+OB] Buscando entregavel para preco principal: ${mainPrice}`)
+                    
+                    // Primeiro tenta pelo index da sequencia
+                    const currentSeq = dsObSequences[dsObSequenceIndex]
+                    if (currentSeq?.deliverableId && currentSeq.deliveryType === "custom") {
+                      dsObMainDeliverableId = currentSeq.deliverableId
+                      console.log(`[DOWNSELL+OB] Usando entregavel da sequencia ${dsObSequenceIndex}: ${dsObMainDeliverableId}`)
+                    } else {
+                      // Buscar pelo preco
+                      for (const seq of dsObSequences) {
+                        const seqPlans = seq.plans || []
+                        for (const plan of seqPlans) {
+                          if (Math.abs(plan.price - mainPrice) < 0.01) {
+                            console.log(`[DOWNSELL+OB] Encontrou sequencia ${seq.id} com plano de preco ${plan.price}`)
+                            if (seq.deliveryType === "custom" && seq.deliverableId) {
+                              dsObMainDeliverableId = seq.deliverableId
+                              console.log(`[DOWNSELL+OB] Usando entregavel da sequencia: ${dsObMainDeliverableId}`)
+                            }
+                            break
+                          }
                         }
-                        break
+                        if (dsObMainDeliverableId) break
                       }
                     }
-                    if (dsObMainDeliverableId) break
                   }
                   
                   console.log(`[DOWNSELL+OB] Entregando produto PRINCIPAL do downsell (deliverableId: ${dsObMainDeliverableId || "main"})`)
@@ -1784,6 +1805,241 @@ export async function POST(request: NextRequest) {
                   await sendTelegramMessage(bot.token, chatId, "Pagamento aprovado! Seu acesso foi liberado.")
                 }
                 // ========== FIM DOWNSELL COM ORDER BUMP ==========
+              } else if (payment.product_type === "upsell_with_bump") {
+                // ========== PAGAMENTO DE UPSELL COM ORDER BUMP APROVADO ==========
+                console.log(`[UPSELL+OB] Upsell with order bump payment approved for user ${chatId}`)
+                
+                // 1. Cancelar upsells pendentes para este usuario
+                const { data: cancelledUpObUpsells } = await supabase
+                  .from("scheduled_messages")
+                  .update({ status: "cancelled" })
+                  .eq("bot_id", bot.id)
+                  .eq("telegram_user_id", payment.telegram_user_id)
+                  .eq("message_type", "upsell")
+                  .eq("status", "pending")
+                  .select("id")
+                
+                console.log(`[UPSELL+OB] Cancelled ${cancelledUpObUpsells?.length || 0} remaining pending upsells`)
+                
+                // 2. Atualizar user_flow_state para "paid"
+                const upObUserFlowState: Record<string, unknown> = {
+                  bot_id: bot.id,
+                  telegram_user_id: payment.telegram_user_id,
+                  status: "paid",
+                  updated_at: new Date().toISOString()
+                }
+                
+                if (payment.flow_id) {
+                  upObUserFlowState.flow_id = payment.flow_id
+                }
+                
+                await supabase
+                  .from("user_flow_state")
+                  .upsert(upObUserFlowState, { onConflict: "bot_id,telegram_user_id" })
+                
+                // 3. Buscar fluxo vinculado
+                let upObFlowId: string | null = payment.flow_id || null
+                
+                if (!upObFlowId) {
+                  const { data: directFlow } = await supabase
+                    .from("flows")
+                    .select("id, config")
+                    .eq("bot_id", bot.id)
+                    .limit(1)
+                    .single()
+                  
+                  if (directFlow) {
+                    upObFlowId = directFlow.id
+                  } else {
+                    const { data: flowBotLink } = await supabase
+                      .from("flow_bots")
+                      .select("flow_id")
+                      .eq("bot_id", bot.id)
+                      .limit(1)
+                      .single()
+                    
+                    if (flowBotLink) {
+                      upObFlowId = flowBotLink.flow_id
+                    }
+                  }
+                }
+                
+                if (upObFlowId) {
+                  console.log(`[UPSELL+OB] ========== INICIO PROCESSAMENTO ENTREGA ==========`)
+                  console.log(`[UPSELL+OB] flowId: ${upObFlowId}`)
+                  
+                  // Buscar config do fluxo
+                  const { data: upObFlowData } = await supabase
+                    .from("flows")
+                    .select("config")
+                    .eq("id", upObFlowId)
+                    .single()
+                  
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  const upObFlowConfig = upObFlowData?.config as Record<string, any> | null
+                  const upObConfig = upObFlowConfig?.upsell
+                  const upObPaymentMessages = upObFlowConfig?.paymentMessages as {
+                    approvedMessage?: string
+                    approvedMedias?: string[]
+                    accessButtonText?: string
+                    accessButtonUrl?: string
+                  } | undefined
+                  
+                  // 4. Buscar nome do usuario
+                  let upObUserName = "Cliente"
+                  let upObUserUsername = ""
+                  try {
+                    const { data: userData } = await supabase
+                      .from("bot_users")
+                      .select("first_name, last_name, username")
+                      .eq("bot_id", bot.id)
+                      .eq("telegram_user_id", String(chatId))
+                      .single()
+                    if (userData?.first_name) {
+                      upObUserName = userData.first_name
+                    }
+                    if (userData?.username) {
+                      upObUserUsername = userData.username
+                    }
+                  } catch { /* ignore */ }
+                  
+                  // 5. Enviar midias de pagamento aprovado
+                  if (upObPaymentMessages?.approvedMedias && upObPaymentMessages.approvedMedias.length > 0) {
+                    console.log(`[UPSELL+OB] Sending ${upObPaymentMessages.approvedMedias.length} approved medias`)
+                    for (const mediaUrl of upObPaymentMessages.approvedMedias) {
+                      if (mediaUrl.includes(".mp4") || mediaUrl.includes("video")) {
+                        await sendTelegramVideo(bot.token, chatId, mediaUrl, "")
+                      } else {
+                        await sendTelegramPhoto(bot.token, chatId, mediaUrl, "")
+                      }
+                      await sleep(500)
+                    }
+                  }
+                  
+                  // 6. Enviar mensagem de pagamento aprovado
+                  const defaultUpObApprovedMsg = `<b>Pagamento Aprovado!</b>\n\nParabens ${upObUserName}! Seu pagamento foi confirmado.\n\nVoce ja tem acesso ao conteudo!`
+                  let upObApprovedMsg = upObPaymentMessages?.approvedMessage || defaultUpObApprovedMsg
+                  upObApprovedMsg = upObApprovedMsg.replace(/\{nome\}/gi, upObUserName)
+                  upObApprovedMsg = upObApprovedMsg.replace(/\{username\}/gi, upObUserUsername ? `@${upObUserUsername}` : "")
+                  
+                  const upObAccessButtonText = upObPaymentMessages?.accessButtonText || "Acessar Conteudo"
+                  const upObAccessButtonUrl = upObPaymentMessages?.accessButtonUrl
+                  
+                  if (upObAccessButtonUrl) {
+                    await sendTelegramMessage(
+                      bot.token,
+                      chatId,
+                      upObApprovedMsg,
+                      {
+                        inline_keyboard: [[{ text: upObAccessButtonText, url: upObAccessButtonUrl }]]
+                      }
+                    )
+                  } else {
+                    await sendTelegramMessage(
+                      bot.token,
+                      chatId,
+                      upObApprovedMsg,
+                      {
+                        inline_keyboard: [[{ text: upObAccessButtonText, callback_data: "access_deliverable" }]]
+                      }
+                    )
+                  }
+                  
+                  // 7. Pegar info do order bump e plano principal do metadata do pagamento
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  const upObPaymentMetadata = payment.metadata as Record<string, any> | null
+                  const upObMainPlanName = (upObPaymentMetadata?.main_plan_name as string) || ""
+                  const upObOrderBumpDeliverableId = (upObPaymentMetadata?.order_bump_deliverable_id as string) || ""
+                  const upObUpsellDeliverableId = (upObPaymentMetadata?.upsell_deliverable_id as string) || ""
+                  const upObSequenceIndex = (upObPaymentMetadata?.upsell_sequence_index as number) || 0
+                  const upObMainPrice = (upObPaymentMetadata?.main_price as number) || 0
+                  
+                  console.log(`[UPSELL+OB] Payment metadata:`, JSON.stringify(upObPaymentMetadata))
+                  console.log(`[UPSELL+OB] Main plan name: ${upObMainPlanName}`)
+                  console.log(`[UPSELL+OB] Main price: ${upObMainPrice}`)
+                  console.log(`[UPSELL+OB] Upsell deliverable ID: ${upObUpsellDeliverableId}`)
+                  console.log(`[UPSELL+OB] Order bump deliverable ID: ${upObOrderBumpDeliverableId}`)
+                  console.log(`[UPSELL+OB] Sequence index: ${upObSequenceIndex}`)
+                  
+                  // 8. Entregar produto principal do upsell
+                  // Primeiro tenta do metadata, depois da sequencia do upsell
+                  let upObMainDeliverableId = upObUpsellDeliverableId
+                  
+                  if (!upObMainDeliverableId) {
+                    const upObSequences = (upObConfig?.sequences || []) as Array<{
+                      id: string
+                      plans?: Array<{ buttonText: string; price: number }>
+                      deliveryType?: string
+                      deliverableId?: string
+                    }>
+                    
+                    // Buscar pela sequencia do upsell pelo index ou pelo preco
+                    const currentSeq = upObSequences[upObSequenceIndex]
+                    if (currentSeq?.deliverableId && currentSeq.deliveryType === "custom") {
+                      upObMainDeliverableId = currentSeq.deliverableId
+                      console.log(`[UPSELL+OB] Usando entregavel da sequencia ${upObSequenceIndex}: ${upObMainDeliverableId}`)
+                    } else {
+                      // Buscar pelo preco
+                      for (const seq of upObSequences) {
+                        const seqPlans = seq.plans || []
+                        for (const plan of seqPlans) {
+                          if (Math.abs(plan.price - upObMainPrice) < 0.01) {
+                            console.log(`[UPSELL+OB] Encontrou sequencia ${seq.id} com plano de preco ${plan.price}`)
+                            if (seq.deliveryType === "custom" && seq.deliverableId) {
+                              upObMainDeliverableId = seq.deliverableId
+                              console.log(`[UPSELL+OB] Usando entregavel da sequencia: ${upObMainDeliverableId}`)
+                            }
+                            break
+                          }
+                        }
+                        if (upObMainDeliverableId) break
+                      }
+                    }
+                  }
+                  
+                  console.log(`[UPSELL+OB] Entregando produto PRINCIPAL do upsell (deliverableId: ${upObMainDeliverableId || "main"})`)
+                  await sendDelivery(supabase, bot.token, chatId, upObFlowConfig, upObMainDeliverableId)
+                  
+                  // 9. Entregar order bump do upsell (se tiver entregavel especifico)
+                  if (upObOrderBumpDeliverableId && upObOrderBumpDeliverableId !== "") {
+                    console.log(`[UPSELL+OB] Entregando ORDER BUMP do upsell (deliverableId: ${upObOrderBumpDeliverableId})`)
+                    await sleep(1000) // Pequeno delay entre entregas
+                    await sendDelivery(supabase, bot.token, chatId, upObFlowConfig, upObOrderBumpDeliverableId, true)
+                  } else {
+                    // Tentar buscar do config do order bump do upsell
+                    const orderBumpUpsellConfig = upObFlowConfig?.orderBump?.upsell as { deliverableId?: string; deliveryType?: string } | undefined
+                    if (orderBumpUpsellConfig?.deliverableId && orderBumpUpsellConfig.deliveryType === "custom") {
+                      console.log(`[UPSELL+OB] Usando entregavel do config global do order bump upsell: ${orderBumpUpsellConfig.deliverableId}`)
+                      await sleep(1000)
+                      await sendDelivery(supabase, bot.token, chatId, upObFlowConfig, orderBumpUpsellConfig.deliverableId, true)
+                    } else {
+                      console.log(`[UPSELL+OB] Order bump do upsell nao tem entregavel especifico, usando mesmo do principal`)
+                    }
+                  }
+                  
+                  // 10. Marcar usuario como VIP
+                  const { error: vipErrorUpOb } = await supabase
+                    .from("bot_users")
+                    .update({
+                      is_vip: true,
+                      vip_since: new Date().toISOString(),
+                      updated_at: new Date().toISOString()
+                    })
+                    .eq("bot_id", bot.id)
+                    .eq("telegram_user_id", String(chatId))
+                  
+                  if (vipErrorUpOb) {
+                    console.log(`[UPSELL+OB] Error marking user as VIP:`, vipErrorUpOb.message)
+                  } else {
+                    console.log(`[UPSELL+OB] User ${chatId} marked as VIP`)
+                  }
+                  
+                  console.log(`[UPSELL+OB] ========== FIM PROCESSAMENTO ENTREGA ==========`)
+                } else {
+                  console.log(`[UPSELL+OB] No flow found for bot ${bot.id}, sending basic confirmation`)
+                  await sendTelegramMessage(bot.token, chatId, "Pagamento aprovado! Seu acesso foi liberado.")
+                }
+                // ========== FIM UPSELL COM ORDER BUMP ==========
               }
             }
           }

@@ -2419,8 +2419,11 @@ Escaneie o QR Code ou copie o codigo abaixo:
           const productType = isAccept ? "downsell_with_bump" : "downsell"
           console.log("[v0] Saving downsell+OB payment - user_id:", botOwnerDsOb.user_id, "amount:", totalPrice, "product_type:", productType)
           
-          // Pegar o order_bump_deliverable_id do state metadata
-          const obDeliverableId = (stateMetadata?.order_bump_deliverable_id as string) || ""
+          // Pegar o order_bump_deliverable_id e downsell_deliverable_id do state metadata
+          const obDeliverableIdDs = (stateMetadata?.order_bump_deliverable_id as string) || ""
+          const dsDeliverableId = (stateMetadata?.downsell_deliverable_id as string) || ""
+          const dsSequenceIndex = (stateMetadata?.downsell_sequence_index as number) || 0
+          const dsSource = (stateMetadata?.source as string) || "" // "pix_generated" ou ""
 
           await supabase.from("payments").insert({
             user_id: botOwnerDsOb.user_id,
@@ -2446,7 +2449,10 @@ Escaneie o QR Code ou copie o codigo abaixo:
               main_plan_name: mainPlanName,
               order_bump_price: obPrice,
               order_bump_name: obName,
-              order_bump_deliverable_id: obDeliverableId,
+              order_bump_deliverable_id: obDeliverableIdDs,
+              downsell_deliverable_id: dsDeliverableId,
+              downsell_sequence_index: dsSequenceIndex,
+              source: dsSource, // "pix_generated" para downsell PIX
             } : null,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
@@ -2880,6 +2886,11 @@ Escaneie o QR Code ou copie o codigo abaixo:
           // Salvar pagamento
           const productType = isAccept ? "upsell_with_bump" : "upsell"
           console.log("[v0] Saving upsell+OB payment - user_id:", botOwnerUpOb.user_id, "amount:", totalPrice, "product_type:", productType)
+          
+          // Pegar o order_bump_deliverable_id e upsell_deliverable_id do state metadata
+          const obDeliverableIdUp = (stateMetadata?.order_bump_deliverable_id as string) || ""
+          const upsellDeliverableIdUp = (stateMetadata?.upsell_deliverable_id as string) || ""
+          const upsellSequenceIndexUp = (stateMetadata?.upsell_index as number) || 0
 
           await supabase.from("payments").insert({
             user_id: botOwnerUpOb.user_id,
@@ -2900,6 +2911,15 @@ Escaneie o QR Code ou copie o codigo abaixo:
             qr_code_url: pixResultUpOb.qrCodeUrl,
             copy_paste: pixResultUpOb.copyPaste,
             pix_code: pixResultUpOb.copyPaste || pixResultUpOb.qrCode,
+            metadata: isAccept ? {
+              main_price: mainPrice,
+              main_plan_name: mainPlanName,
+              order_bump_price: obPrice,
+              order_bump_name: obName,
+              order_bump_deliverable_id: obDeliverableIdUp,
+              upsell_deliverable_id: upsellDeliverableIdUp,
+              upsell_sequence_index: upsellSequenceIndexUp,
+            } : null,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
           })
