@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getSupabaseAdmin } from "@/lib/supabase"
+import { trackEvent } from "@/lib/tracking"
 
 // ---------------------------------------------------------------------------
 // Telegram helpers
@@ -653,6 +654,22 @@ export async function POST(request: NextRequest) {
           // ========== PAGAMENTO APROVADO - DISPARAR UPSELL ==========
           if (newStatus === "approved") {
             console.log(`Payment ${paymentId} approved! User: ${payment.telegram_user_id}, Product Type: ${payment.product_type}`)
+
+            // ========== TRACKING: Evento Purchase ==========
+            // Disparar evento de compra para Meta/UTMify
+            try {
+              const purchaseValue = Number(payment.amount) || 0
+              await trackEvent(
+                payment.bot_id, 
+                payment.telegram_user_id, 
+                payment.flow_id || null, 
+                "Purchase", 
+                purchaseValue
+              )
+              console.log(`[TRACKING] Evento Purchase disparado: user=${payment.telegram_user_id}, value=${purchaseValue}`)
+            } catch (trackingError) {
+              console.error("[TRACKING] Erro ao disparar Purchase:", trackingError)
+            }
 
             // Buscar bot e dados do usuario
             const { data: bot } = await supabase
