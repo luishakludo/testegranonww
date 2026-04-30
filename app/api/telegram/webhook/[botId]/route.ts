@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server"
 import { getSupabase, getSupabaseAdmin } from "@/lib/supabase"
 import { createPixPayment } from "@/lib/payments/gateways/mercadopago"
+import { parseUtmFromStart, saveTrackingUser, trackEvent } from "@/lib/tracking"
 
 // ---------------------------------------------------------------------------
 // Helper: Sanitizar HTML para Telegram
@@ -1202,15 +1203,25 @@ async function processUpdate(botId: string, update: Record<string, unknown>) {
       }
       // ========== FIM CHECK PAYMENT STATUS ==========
 
-      // Handle "ver_planos" - show plans as buttons
-      if (callbackData === "ver_planos") {
-        // Answer callback
-        await fetch(`https://api.telegram.org/bot${botToken}/answerCallbackQuery`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ callback_query_id: callbackQueryId })
-        })
-        // Find flow for this bot
+    // Handle "ver_planos" - show plans as buttons
+    if (callbackData === "ver_planos") {
+      // Answer callback
+      await fetch(`https://api.telegram.org/bot${botToken}/answerCallbackQuery`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ callback_query_id: callbackQueryId })
+      })
+      
+      // ========== TRACKING: Evento ViewContent ==========
+      // Usuario clicou para ver os planos/oferta
+      try {
+        await trackEvent(botUuid, String(telegramUserId), null, "ViewContent")
+        console.log("[TRACKING] Evento ViewContent disparado:", { user: telegramUserId })
+      } catch (trackingError) {
+        console.error("[TRACKING] Erro ao disparar ViewContent:", trackingError)
+      }
+      
+      // Find flow for this bot
         const { data: directFlow } = await supabase
           .from("flows")
           .select("*")
@@ -3284,6 +3295,15 @@ Escaneie o QR Code ou copie o codigo abaixo:
           return
         }
 
+        // ========== TRACKING: Evento InitiateCheckout ==========
+        // Usuario clicou no botao de pagamento - disparar evento para Meta/UTMify
+        try {
+          await trackEvent(botUuid, String(telegramUserId), flowIdForGateway || null, "InitiateCheckout", planPrice)
+          console.log("[TRACKING] Evento InitiateCheckout disparado:", { user: telegramUserId, price: planPrice })
+        } catch (trackingError) {
+          console.error("[TRACKING] Erro ao disparar InitiateCheckout:", trackingError)
+        }
+
         // ========== VERIFICAR ORDER BUMP ANTES DE GERAR PAGAMENTO ==========
         // Buscar o fluxo vinculado ao bot para verificar Order Bump
         let flowForOrderBump: { id: string; config: unknown } | null = null
@@ -3956,6 +3976,24 @@ Escaneie o QR Code ou copie o codigo abaixo:
         if (leadError) {
           console.error("[webhook] Erro ao inserir lead:", leadError.message, leadError.code)
         }
+      }
+      
+      // 5.3 TRACKING: Capturar UTMs e salvar usuario de tracking
+      // O parametro /start pode conter UTMs: /start utm_source=facebook&utm_campaign=teste
+      try {
+        const utms = parseUtmFromStart(text)
+        console.log("[TRACKING] UTMs capturadas:", utms)
+        
+        // Salvar usuario de tracking (com UTMs - nao sobrescreve UTMs existentes)
+        await saveTrackingUser(botUuid, String(telegramUserId), utms)
+        
+        // Disparar evento Lead (entrada no bot) - flowId sera null por enquanto
+        // O evento sera enviado para Meta e UTMify
+        await trackEvent(botUuid, String(telegramUserId), null, "Lead")
+        console.log("[TRACKING] Evento Lead disparado para usuario:", telegramUserId)
+      } catch (trackingError) {
+        // Nao bloqueia o fluxo se tracking falhar
+        console.error("[TRACKING] Erro ao processar tracking:", trackingError)
       }
     }
 

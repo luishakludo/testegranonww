@@ -6,24 +6,25 @@ import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogClose,
+  Dialog, DialogContent, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog"
 import { NoBotSelected } from "@/components/no-bot-selected"
 import { useBots } from "@/lib/bot-context"
 import { useAuth } from "@/lib/auth-context"
 import { supabase } from "@/lib/supabase"
-import { useState, useEffect } from "react"
-import { Zap, GitBranch, BarChart3, Globe, Plus, Facebook, Loader2 } from "lucide-react"
+import { useState, useEffect, useCallback } from "react"
+import { Zap, GitBranch, BarChart3, Globe, Plus, Facebook, Loader2, Trash2, RefreshCw } from "lucide-react"
 
 interface TrackingProfile {
   id: string
   name: string
-  pixelId: string
-  accessToken: string
-  utmifyToken: string
+  pixel_id: string | null
+  access_token: string | null
+  utmify_token: string | null
   events: string[]
-  linkedFlows: string[]
+  linked_flows: string[]
   active: boolean
+  created_at: string
 }
 
 interface Flow {
@@ -33,17 +34,18 @@ interface Flow {
 }
 
 const EVENTS = [
-  { id: "PageView", label: "PageView" },
-  { id: "ViewContent", label: "ViewContent" },
-  { id: "Lead", label: "Lead" },
-  { id: "InitiateCheckout", label: "InitiateCheckout" },
-  { id: "Purchase", label: "Purchase" },
+  { id: "Lead", label: "Lead", description: "Entrada no bot" },
+  { id: "ViewContent", label: "ViewContent", description: "Visualiza oferta" },
+  { id: "InitiateCheckout", label: "InitiateCheckout", description: "Clique no pagamento" },
+  { id: "Purchase", label: "Purchase", description: "Pagamento aprovado" },
 ]
 
 export default function TrackingPage() {
   const { selectedBot } = useBots()
   const { session } = useAuth()
   const [profiles, setProfiles] = useState<TrackingProfile[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [isSaving, setIsSaving] = useState(false)
   const [showPlatformDialog, setShowPlatformDialog] = useState(false)
   const [showFacebookDialog, setShowFacebookDialog] = useState(false)
   
@@ -55,10 +57,32 @@ export default function TrackingPage() {
   const [profileName, setProfileName] = useState("")
   const [pixelId, setPixelId] = useState("")
   const [accessToken, setAccessToken] = useState("")
-  const [pixelExtra, setPixelExtra] = useState(false)
   const [utmifyToken, setUtmifyToken] = useState("")
-  const [selectedEvents, setSelectedEvents] = useState<string[]>(["PageView", "ViewContent", "Lead", "InitiateCheckout", "Purchase"])
+  const [selectedEvents, setSelectedEvents] = useState<string[]>(["Lead", "ViewContent", "InitiateCheckout", "Purchase"])
   const [selectedFlows, setSelectedFlows] = useState<string[]>([])
+
+  // Fetch profiles from API
+  const fetchProfiles = useCallback(async () => {
+    if (!selectedBot?.id) return
+    
+    setIsLoading(true)
+    try {
+      const response = await fetch(`/api/tracking/profiles?bot_id=${selectedBot.id}`)
+      const data = await response.json()
+      if (data.profiles) {
+        setProfiles(data.profiles)
+      }
+    } catch (error) {
+      console.error("Error fetching profiles:", error)
+    } finally {
+      setIsLoading(false)
+    }
+  }, [selectedBot?.id])
+
+  // Fetch profiles on mount
+  useEffect(() => {
+    fetchProfiles()
+  }, [fetchProfiles])
   
   // Fetch flows from database
   useEffect(() => {
@@ -90,32 +114,44 @@ export default function TrackingPage() {
     setShowFacebookDialog(true)
   }
 
-  const handleCreateProfile = () => {
+  const handleCreateProfile = async () => {
     if (!profileName.trim()) return
     
-    const newProfile: TrackingProfile = {
-      id: Date.now().toString(),
-      name: profileName,
-      pixelId,
-      accessToken,
-      utmifyToken,
-      events: selectedEvents,
-      linkedFlows: selectedFlows,
-      active: true,
+    setIsSaving(true)
+    try {
+      const response = await fetch("/api/tracking/profiles", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: profileName,
+          botId: selectedBot.id,
+          pixelId: pixelId || null,
+          accessToken: accessToken || null,
+          utmifyToken: utmifyToken || null,
+          events: selectedEvents,
+          linkedFlows: selectedFlows,
+        }),
+      })
+      
+      const data = await response.json()
+      if (data.profile) {
+        setProfiles([data.profile, ...profiles])
+        resetForm()
+        setShowFacebookDialog(false)
+      }
+    } catch (error) {
+      console.error("Error creating profile:", error)
+    } finally {
+      setIsSaving(false)
     }
-    
-    setProfiles([...profiles, newProfile])
-    resetForm()
-    setShowFacebookDialog(false)
   }
 
   const resetForm = () => {
     setProfileName("")
     setPixelId("")
     setAccessToken("")
-    setPixelExtra(false)
     setUtmifyToken("")
-    setSelectedEvents(["PageView", "ViewContent", "Lead", "InitiateCheckout", "Purchase"])
+    setSelectedEvents(["Lead", "ViewContent", "InitiateCheckout", "Purchase"])
     setSelectedFlows([])
   }
 
@@ -135,15 +171,43 @@ export default function TrackingPage() {
     )
   }
 
-  const toggleProfileActive = (profileId: string) => {
-    setProfiles(prev => 
-      prev.map(p => p.id === profileId ? { ...p, active: !p.active } : p)
-    )
+  const toggleProfileActive = async (profileId: string, currentActive: boolean) => {
+    try {
+      const response = await fetch("/api/tracking/profiles", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: profileId, active: !currentActive }),
+      })
+      
+      if (response.ok) {
+        setProfiles(prev => 
+          prev.map(p => p.id === profileId ? { ...p, active: !currentActive } : p)
+        )
+      }
+    } catch (error) {
+      console.error("Error toggling profile:", error)
+    }
+  }
+
+  const deleteProfile = async (profileId: string) => {
+    if (!confirm("Tem certeza que deseja excluir este perfil?")) return
+    
+    try {
+      const response = await fetch(`/api/tracking/profiles?id=${profileId}`, {
+        method: "DELETE",
+      })
+      
+      if (response.ok) {
+        setProfiles(prev => prev.filter(p => p.id !== profileId))
+      }
+    } catch (error) {
+      console.error("Error deleting profile:", error)
+    }
   }
 
   const activeProfiles = profiles.filter(p => p.active).length
-  const linkedFlowsCount = profiles.reduce((acc, p) => acc + p.linkedFlows.length, 0)
-  const totalEvents = profiles.reduce((acc, p) => acc + p.events.length, 0)
+  const linkedFlowsCount = profiles.reduce((acc, p) => acc + (p.linked_flows?.length || 0), 0)
+  const totalEvents = profiles.reduce((acc, p) => acc + (p.events?.length || 0), 0)
 
   return (
     <ScrollArea className="flex-1">
@@ -157,15 +221,17 @@ export default function TrackingPage() {
                 Trackeamento
               </h1>
               <p className="text-sm text-muted-foreground">
-                Gerencie perfis de rastreamento e vincule aos seus fluxos
+                Gerencie perfis de rastreamento para Meta e UTMify
               </p>
             </div>
             <div className="flex items-center gap-3">
               <Button 
                 variant="ghost" 
+                onClick={fetchProfiles}
+                disabled={isLoading}
                 className="text-amber-500 hover:text-amber-400 hover:bg-amber-500/10 gap-2"
               >
-                <Zap className="w-4 h-4" />
+                <RefreshCw className={`w-4 h-4 ${isLoading ? "animate-spin" : ""}`} />
                 Sincronizar
               </Button>
               <Button 
@@ -191,8 +257,8 @@ export default function TrackingPage() {
             </div>
             
             <div className="bg-card border border-border rounded-xl p-5 flex items-center gap-4">
-              <div className="w-12 h-12 rounded-xl bg-purple-500/10 flex items-center justify-center">
-                <GitBranch className="w-5 h-5 text-purple-500" />
+              <div className="w-12 h-12 rounded-xl bg-emerald-500/10 flex items-center justify-center">
+                <GitBranch className="w-5 h-5 text-emerald-500" />
               </div>
               <div>
                 <p className="text-2xl font-bold text-foreground">{linkedFlowsCount}</p>
@@ -206,29 +272,38 @@ export default function TrackingPage() {
               </div>
               <div>
                 <p className="text-2xl font-bold text-foreground">{totalEvents}</p>
-                <p className="text-xs text-muted-foreground uppercase tracking-wider">Total de Eventos</p>
+                <p className="text-xs text-muted-foreground uppercase tracking-wider">Eventos Configurados</p>
               </div>
             </div>
           </div>
 
           {/* Info Banner */}
-          <div className="bg-card border border-border rounded-xl p-4 mb-6 flex items-center gap-3">
-            <Globe className="w-5 h-5 text-blue-400" />
-            <p className="text-sm text-muted-foreground">
-              <span className="text-foreground font-medium">Perfis de Trackeamento</span> permitem configurar seu Facebook Pixel, TikTok Events API, UTMify e Otimizey uma vez e reutilizar em multiplos fluxos.
-            </p>
+          <div className="bg-card border border-border rounded-xl p-4 mb-6 flex items-start gap-3">
+            <Globe className="w-5 h-5 text-blue-400 mt-0.5" />
+            <div>
+              <p className="text-sm text-foreground font-medium mb-1">Sistema de Tracking Dragon</p>
+              <p className="text-sm text-muted-foreground">
+                Os eventos sao disparados automaticamente via backend quando usuarios entram no bot (Lead), 
+                visualizam ofertas (ViewContent), clicam em pagamento (InitiateCheckout) e quando o pagamento 
+                e aprovado (Purchase). UTMs sao capturadas do link do Telegram e preservadas para atribuicao.
+              </p>
+            </div>
           </div>
 
           {/* Profiles List or Empty State */}
           <div className="bg-card border border-border rounded-xl overflow-hidden">
-            {profiles.length === 0 ? (
+            {isLoading ? (
+              <div className="flex items-center justify-center py-16">
+                <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+              </div>
+            ) : profiles.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-16 px-6">
                 <div className="w-16 h-16 rounded-2xl bg-muted flex items-center justify-center mb-4">
                   <BarChart3 className="w-7 h-7 text-muted-foreground" />
                 </div>
                 <h3 className="text-base font-semibold text-foreground mb-1">Nenhum perfil criado</h3>
                 <p className="text-sm text-muted-foreground mb-6 text-center max-w-sm">
-                  Crie seu primeiro perfil de trackeamento para comecar a rastrear conversoes
+                  Crie seu primeiro perfil de trackeamento para comecar a rastrear conversoes no Meta e UTMify
                 </p>
                 <Button 
                   onClick={() => setShowPlatformDialog(true)}
@@ -249,7 +324,9 @@ export default function TrackingPage() {
                       <div>
                         <p className="font-medium text-foreground text-sm">{profile.name}</p>
                         <p className="text-xs text-muted-foreground">
-                          {profile.events.length} eventos | {profile.linkedFlows.length} fluxos vinculados
+                          {profile.events?.length || 0} eventos | {profile.linked_flows?.length || 0} fluxos vinculados
+                          {profile.pixel_id && " | Meta"}
+                          {profile.utmify_token && " | UTMify"}
                         </p>
                       </div>
                     </div>
@@ -263,9 +340,17 @@ export default function TrackingPage() {
                       </span>
                       <Switch 
                         checked={profile.active} 
-                        onCheckedChange={() => toggleProfileActive(profile.id)}
+                        onCheckedChange={() => toggleProfileActive(profile.id, profile.active)}
                         className="data-[state=checked]:bg-blue-500"
                       />
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => deleteProfile(profile.id)}
+                        className="text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
                     </div>
                   </div>
                 ))}
@@ -300,7 +385,7 @@ export default function TrackingPage() {
                   <Facebook className="w-7 h-7 text-blue-500" />
                 </div>
                 <span className="text-foreground font-medium text-sm">Facebook</span>
-                <span className="text-xs text-muted-foreground text-center mt-1">Pixel & Conversions API</span>
+                <span className="text-xs text-muted-foreground text-center mt-1">Pixel & CAPI</span>
               </button>
               
               {/* TikTok - Disabled */}
@@ -311,7 +396,7 @@ export default function TrackingPage() {
                   </svg>
                 </div>
                 <span className="text-muted-foreground font-medium text-sm">TikTok</span>
-                <span className="text-xs text-muted-foreground/70 text-center mt-1">Events API</span>
+                <span className="text-xs text-muted-foreground/70 text-center mt-1">Em breve</span>
               </div>
               
               {/* Kwai - Disabled */}
@@ -322,7 +407,7 @@ export default function TrackingPage() {
                   </svg>
                 </div>
                 <span className="text-muted-foreground font-medium text-sm">Kwai</span>
-                <span className="text-xs text-muted-foreground/70 text-center mt-1">Event API</span>
+                <span className="text-xs text-muted-foreground/70 text-center mt-1">Em breve</span>
               </div>
             </div>
             
@@ -346,7 +431,7 @@ export default function TrackingPage() {
               <DialogTitle className="text-foreground text-lg font-semibold">Novo Perfil Facebook</DialogTitle>
             </div>
             <p className="text-sm text-muted-foreground mt-1">
-              Configure as credenciais do Facebook Pixel e UTMify, depois selecione os fluxos
+              Configure as credenciais do Facebook Pixel e UTMify
             </p>
           </DialogHeader>
           
@@ -367,11 +452,11 @@ export default function TrackingPage() {
               <div className="space-y-4">
                 <div className="flex items-center gap-2">
                   <div className="flex-1 h-px bg-border"></div>
-                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Facebook Pixel</span>
+                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Facebook Conversion API</span>
                   <div className="flex-1 h-px bg-border"></div>
                 </div>
                 
-                <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-4">
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-muted-foreground">Pixel ID</label>
                     <Input 
@@ -389,16 +474,10 @@ export default function TrackingPage() {
                       placeholder="Token para API de Conversoes"
                       className="bg-input border-border text-foreground placeholder:text-muted-foreground h-11 rounded-xl focus:border-blue-500 focus:ring-blue-500/20"
                     />
+                    <p className="text-xs text-muted-foreground">
+                      Obtenha em: Business Manager &gt; Events Manager &gt; Data Sources &gt; Settings
+                    </p>
                   </div>
-                </div>
-                
-                <div className="flex items-center gap-3">
-                  <span className="text-sm text-muted-foreground uppercase tracking-wider">Pixel Extra (Aquecimento)</span>
-                  <Switch 
-                    checked={pixelExtra}
-                    onCheckedChange={setPixelExtra}
-                    className="data-[state=checked]:bg-blue-500"
-                  />
                 </div>
               </div>
 
@@ -415,7 +494,7 @@ export default function TrackingPage() {
                   <Input 
                     value={utmifyToken}
                     onChange={(e) => setUtmifyToken(e.target.value)}
-                    placeholder="Ex: utm_abc123xyz789"
+                    placeholder="Seu token da API UTMify"
                     className="bg-input border-border text-foreground placeholder:text-muted-foreground h-11 rounded-xl focus:border-blue-500 focus:ring-blue-500/20"
                   />
                 </div>
@@ -429,22 +508,27 @@ export default function TrackingPage() {
                   <div className="flex-1 h-px bg-border"></div>
                 </div>
                 
-                <div className="flex flex-wrap gap-2">
+                <div className="space-y-2">
                   {EVENTS.map((event) => (
                     <button
                       key={event.id}
                       onClick={() => toggleEvent(event.id)}
-                      className={`flex items-center gap-2 px-3 py-2 rounded-lg border transition-all ${
+                      className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl border transition-all text-left ${
                         selectedEvents.includes(event.id)
-                          ? "bg-blue-500/10 border-blue-500/30 text-blue-400"
-                          : "bg-input border-border text-muted-foreground hover:border-border/80"
+                          ? "bg-blue-500/10 border-blue-500/30"
+                          : "bg-input border-border hover:border-border/80"
                       }`}
                     >
                       <Checkbox 
                         checked={selectedEvents.includes(event.id)}
                         className="data-[state=checked]:bg-blue-500 data-[state=checked]:border-blue-500 border-border"
                       />
-                      <span className="text-sm font-medium">{event.label}</span>
+                      <div>
+                        <span className={`text-sm font-medium ${selectedEvents.includes(event.id) ? "text-blue-400" : "text-foreground"}`}>
+                          {event.label}
+                        </span>
+                        <p className="text-xs text-muted-foreground">{event.description}</p>
+                      </div>
                     </button>
                   ))}
                 </div>
@@ -465,29 +549,34 @@ export default function TrackingPage() {
                     </div>
                   ) : availableFlows.length === 0 ? (
                     <p className="text-sm text-muted-foreground text-center py-4">
-                      Nenhum fluxo criado
+                      Nenhum fluxo criado. Se nenhum fluxo for vinculado, o tracking sera aplicado a todos os fluxos do bot.
                     </p>
                   ) : (
-                    availableFlows.map((flow) => (
-                      <div
-                        key={flow.id}
-                        onClick={() => toggleFlow(flow.id)}
-                        className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
-                          selectedFlows.includes(flow.id)
-                            ? "bg-blue-500/5 border-blue-500/30"
-                            : "bg-muted/30 border-border hover:border-border/80"
-                        }`}
-                      >
-                        <Checkbox 
-                          checked={selectedFlows.includes(flow.id)}
-                          className="data-[state=checked]:bg-blue-500 data-[state=checked]:border-blue-500 border-border"
-                        />
-                        <div>
-                          <p className="text-sm font-medium text-foreground">{flow.name}</p>
-                          <p className="text-xs text-muted-foreground">{flow.status === "ativo" || flow.status === "active" ? "Ativo" : "Inativo"}</p>
+                    <>
+                      <p className="text-xs text-muted-foreground mb-2">
+                        Deixe vazio para aplicar a todos os fluxos, ou selecione fluxos especificos:
+                      </p>
+                      {availableFlows.map((flow) => (
+                        <div
+                          key={flow.id}
+                          onClick={() => toggleFlow(flow.id)}
+                          className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
+                            selectedFlows.includes(flow.id)
+                              ? "bg-blue-500/5 border-blue-500/30"
+                              : "bg-muted/30 border-border hover:border-border/80"
+                          }`}
+                        >
+                          <Checkbox 
+                            checked={selectedFlows.includes(flow.id)}
+                            className="data-[state=checked]:bg-blue-500 data-[state=checked]:border-blue-500 border-border"
+                          />
+                          <div>
+                            <p className="text-sm font-medium text-foreground">{flow.name}</p>
+                            <p className="text-xs text-muted-foreground">{flow.status === "ativo" || flow.status === "active" ? "Ativo" : "Inativo"}</p>
+                          </div>
                         </div>
-                      </div>
-                    ))
+                      ))}
+                    </>
                   )}
                 </div>
               </div>
@@ -508,10 +597,17 @@ export default function TrackingPage() {
             </Button>
             <Button 
               onClick={handleCreateProfile}
-              disabled={!profileName.trim()}
+              disabled={!profileName.trim() || isSaving}
               className="bg-foreground hover:bg-foreground/90 text-background font-medium"
             >
-              Criar Perfil
+              {isSaving ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Criando...
+                </>
+              ) : (
+                "Criar Perfil"
+              )}
             </Button>
           </div>
         </DialogContent>
