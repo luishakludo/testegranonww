@@ -76,12 +76,12 @@ export default function TrackingPage() {
 
   // Fetch profiles from API
   const fetchProfiles = useCallback(async () => {
-    if (!selectedBot?.id) return
+    if (!selectedBot?.id || !session?.userId) return
     
     setIsLoading(true)
     setError(null)
     try {
-      const response = await fetch(`/api/tracking/profiles?bot_id=${selectedBot.id}`)
+      const response = await fetch(`/api/tracking/profiles?bot_id=${selectedBot.id}&userId=${session.userId}`)
       const data = await response.json()
       
       if (!response.ok) {
@@ -99,7 +99,7 @@ export default function TrackingPage() {
     } finally {
       setIsLoading(false)
     }
-  }, [selectedBot?.id])
+  }, [selectedBot?.id, session?.userId])
 
   // Fetch profiles on mount
   useEffect(() => {
@@ -157,6 +157,7 @@ export default function TrackingPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          userId: session?.userId,
           name: profileName,
           botId: selectedBot.id,
           pixelId: pixelId || null,
@@ -258,7 +259,7 @@ export default function TrackingPage() {
       const response = await fetch("/api/tracking/profiles", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: profileId, active: !currentActive }),
+        body: JSON.stringify({ userId: session?.userId, id: profileId, active: !currentActive }),
       })
       
       if (response.ok) {
@@ -281,7 +282,7 @@ export default function TrackingPage() {
     if (!confirm("Tem certeza que deseja excluir este perfil?")) return
     
     try {
-      const response = await fetch(`/api/tracking/profiles?id=${profileId}`, {
+      const response = await fetch(`/api/tracking/profiles?id=${profileId}&userId=${session?.userId}`, {
         method: "DELETE",
       })
       
